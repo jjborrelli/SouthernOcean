@@ -70,7 +70,9 @@ webPROPS <- function(graph){
 
 ```{r}
 permutes_rc <- function(mat, iter = 100){
- 
+  require(igraph)
+  require(data.table)
+  
   pattern1 <- matrix(c(0,1,1,0), nrow = 2, ncol = 2)
   pattern2 <- matrix(c(1,0,0,1), nrow = 2, ncol = 2)
   count <- 0
@@ -86,20 +88,22 @@ permutes_rc <- function(mat, iter = 100){
     if(sum(test == pattern1) == 4){
       count <- count + 1
       mat[srow, scol] <- pattern2
-      mat.list[[count]] <- mat
+      g <- graph.adjacency(mat)
+      mat.list[[count]] <- motif_counter(list(g), web = i)
       
       next
     } else if(sum(test == pattern2) == 4){
       count <- count + 1
       mat[srow, scol] <- pattern1
-      mat.list[[count]] <- mat
+      g <- graph.adjacency(mat)
+      mat.list[[count]] <- motif_counter(list(g), web = i)
       
       next
     } else {next}
   }
   
-  matrices <- lapply(mat.list, as.matrix)
-  return(permuted.matrices = matrices)
+  matrices <- rbindlist(mat.list)
+  return(matrices)
 }
 ```
 
@@ -247,6 +251,81 @@ year.props <- sapply(year.g, webPROPS)
 year.props
 ```
 
+Next I use the package `betalink` from Poisot et al. 2012 to determine the betadiversity of all pairs of annual networks.  
+S = Dissimilarity in the species composition of communities  
+OS = Dissimilarity of interactions established between species common to both realizations
+WN = Dissimilarity of interactions
+ST = Dissimilarity of interactions due to species turnover
+```{r}
+library(betalink)
+test <- network_betadiversity(year.g)
+bl.y <- list()
+for(i in 1:10){
+  bl.y[[i]] <- betalink(year.g[[i]], year.g[[i+1]])
+}
+timeline <- rbindlist(bl.y)
+ggplot(melt(timeline), aes(x = rep(1991:2000, 4), y = value)) + geom_point() + geom_smooth(method = "glm") + scale_x_continuous(breaks = c(1991:2000)) + xlab("Year") + ylab("Dissimilarity") + facet_wrap(~variable)
+```
+
+#### Motif structure
+
+```{r}
+library(parallel)
+library(doSNOW)
+cl <- makeCluster(detectCores()-1)
+registerDoSNOW(cl)
+clusterExport(cl, list("permutes_rc", "graph.adjacency", "motif_counter"))
+
+rands <- parLapply(cl, y.ad, function(x){r1 <- permutes_rc(x, 10000)
+                                         r2 <- lapply(r1, graph.adjacency)
+                                         r3 <- motif_counter(r2, webs = 1:1000)
+                                         return(r3)})
+
+stopCluster(cl)
+
+r1 <- list()
+n <- 30000
+for(i in 1:length(y.ad)){
+  r1[[i]] <- permutes_rc(y.ad[[i]], n)
+  print(i)
+}
+
+mots <- motif_counter(year.g, webs = 1990:2000)
+means1 <- t(sapply(r1, colMeans))
+sds <- t(sapply(r1, function(x){apply(x, 2, sd)}))
+
+cv <- apply(mots[,2:14], 2, function(x){sd(x)/mean(x)})
+qss <- c(1, .5345, .0561, 1, 1, .037, .0428, .0891, .0866, .0101, 0, .0021, 0) #from subgraph paper
+
+z1 <- (mots[,2:14] - means1[,2:14])/sds[,2:14]
+z1[is.na(z1)] <- 0
+boxplot(z1)
+cv <- apply(z1, 2, function(x){sd(x)/mean(x)})
+plot(abs(cv)~qss)
+
+means.z <- colMeans(z1)
+u1 <- means.z + 1.96*sqrt(apply(z1, 2, var)/11)
+l1 <- means.z - 1.96*sqrt(apply(z1, 2, var)/11)
+
+cols <- names(mots)[-1]
+dens <- matrix(nrow = 11, ncol = length(cols))
+for(i in 1:11){
+  for(j in 1:length(cols)){
+    #dens[i,j] <- sum(r1[[i]][[cols[j]]] < mots[i,j+1])/30000
+    q <- quantile(r1[[i]][[cols[j]]], c(.025, .975))
+    dens[i,j] <- mots[i,j+1] <= q[1] | mots[i,j+1] >= q[2]
+  }
+}
+dens
+
+sum(r1[[1]][[cols[1]]] >= mots[1, 2])/30000
+
+year <- rep(1990:2000, each = 30000)
+dats <- cbind(year, rbindlist(r1))
+setwd("C:/Users/jjborrelli/Desktop/")
+write.csv(dats, "permutes.csv")
+```
+
 
 ### By location
 
@@ -272,4 +351,6 @@ for (i in 1:length(loc.y.ls)){
 ly.props <- sapply(ly.g, webPROPS)
 ly.props
 ```
+
+
 
